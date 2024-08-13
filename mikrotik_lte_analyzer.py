@@ -1,12 +1,14 @@
 import paramiko
 import tkinter as tk
 from tkinter import ttk
+from tkinter import messagebox
 import threading
 import time
 import os
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import requests
+import speedtest
+from ping3 import ping
 
 class LTEAnalyzerApp:
     def __init__(self, master):
@@ -19,8 +21,8 @@ class LTEAnalyzerApp:
         self.selected_tower = None
         self.test_data = {
             'download_speeds': [],
-            'ping': [],
-            'signal_quality': []
+            'upload_speeds': [],
+            'ping': []
         }
         
         self.setup_ui()
@@ -47,11 +49,14 @@ class LTEAnalyzerApp:
 
         # Define the accent button style
         style = ttk.Style()
-        style.configure("Accent.TButton", background="#4CAF50", foreground="white")
+        style.configure("Accent.TButton", background="#4CAF50", foreground="black")
         style.map("Accent.TButton", background=[("active", "#45a049")])
 
         self.connect_button = ttk.Button(self.master, text="Connect", command=self.connect_to_router, style="Accent.TButton")
         self.connect_button.pack(pady=10)
+
+        self.clear_button = ttk.Button(self.master, text="Clear All", command=self.clear_all, style="Accent.TButton")
+        self.clear_button.pack(pady=10)
 
         self.scan_button = ttk.Button(self.master, text="Start Scan", command=self.start_scan, style="Accent.TButton")
         self.scan_button.pack(pady=10)
@@ -91,7 +96,7 @@ class LTEAnalyzerApp:
 
     def open_github_link(self):
         import webbrowser
-        webbrowser.open("https://github.com/ashanet/MikroTik-LTE-Analyzer")
+        webbrowser.open("https://github.com/ashanet")
 
     def connect_to_router(self):
         if not self.connection_established:
@@ -123,6 +128,10 @@ class LTEAnalyzerApp:
                 self.ip_entry.insert(0, lines[0].strip())
                 self.username_entry.insert(0, lines[1].strip())
                 self.password_entry.insert(0, lines[2].strip())
+
+    def clear_all(self):
+        self.tree.delete(*self.tree.get_children())
+        self.data = {}
 
     def start_scan(self):
         if self.connection_established:
@@ -185,24 +194,24 @@ class LTEAnalyzerApp:
             rsrp_value = int(values["RSRP"].replace("dBm", "").replace("dB", "").strip())
             connections = values["Connections"]
             color = self.get_signal_color(rsrp_value)
-            self.tree.insert("", tk.END, values=(phy_cellid, band, earfcn, values["RSRP"], values["RSRQ"], values["AGE"], connections), tags=("color",))
-            self.tree.tag_configure("color", background=color)
+            self.tree.insert("", tk.END, values=(phy_cellid, band, earfcn, values["RSRP"], values["RSRQ"], values["AGE"], connections), tags=("colored",))
+            self.tree.tag_configure("colored", background=color)
 
-    def get_signal_color(self, rsrp_value):
-        # Mapping RSRP to color gradient from green (good) to red (bad)
-        if rsrp_value >= -80:
-            return "#e0f2f1"  # Light green
-        elif rsrp_value >= -90:
-            return "#b9fbc0"  # Green
-        elif rsrp_value >= -100:
-            return "#ffebee"  # Light pink
+    def get_signal_color(self, rsrp):
+        if rsrp > -60:
+            return "lightgreen"
+        elif rsrp > -80:
+            return "lightyellow"
         else:
-            return "#ffccbc"  # Red
+            return "lightcoral"
 
     def on_row_double_click(self, event):
         item = self.tree.selection()[0]
         values = self.tree.item(item, 'values')
         phy_cellid, band, earfcn, rsrp, rsrq, age, connections = values
+
+        # Select the tower
+        self.select_tower(phy_cellid, band, earfcn)
 
         # Open a new window to display details
         details_window = tk.Toplevel(self.master)
@@ -221,132 +230,20 @@ class LTEAnalyzerApp:
         speed_test_button = ttk.Button(details_window, text="Run Speed Test", command=lambda: self.run_speed_test(details_window))
         speed_test_button.pack(pady=10)
 
+        # Button to lock on selected tower
+        lock_button = ttk.Button(details_window, text="Lock on Selected Tower", command=self.lock_to_tower, style="Accent.TButton")
+        lock_button.pack(pady=10)
+
         # Create a frame for the graphs
         graph_frame = ttk.Frame(details_window)
         graph_frame.pack(pady=10, fill=tk.BOTH, expand=True)
 
-    def run_speed_test(self, details_window):
-        # Initialize data collection
-        self.test_data = {
-            'download_speeds': [],
-            'ping': [],
-            'signal_quality': []
+    def select_tower(self, phy_cellid, band, earfcn):
+        self.selected_tower = {
+            'phy_cellid': phy_cellid,
+            'band': band,
+            'earfcn': earfcn
         }
-
-        # Run speed test in a separate thread
-        threading.Thread(target=self.perform_speed_test, args=(details_window,)).start()
-
-    def perform_speed_test(self, details_window, duration=60):
-        download_speeds = []
-        pings = []
-        signal_qualities = []
-        start_time = time.time()
-
-        while time.time() - start_time < duration:
-            download_speed = self.get_download_speed()
-            ping = self.get_ping()
-            signal_quality = 100 - (ping / 10)  # Example of signal quality based on ping
-
-            download_speeds.append(download_speed)
-            pings.append(ping)
-            signal_qualities.append(signal_quality)
-
-            # Update the table with the latest download speed
-            self.update_speed_table(download_speed, details_window)
-
-            time.sleep(10)  # Update every 10 seconds
-
-        self.test_data['download_speeds'] = download_speeds
-        self.test_data['ping'] = pings
-        self.test_data['signal_quality'] = signal_qualities
-
-        # Update the graphs and statistics
-        self.update_graphs(details_window)
-        self.update_statistics(details_window)
-
-    def get_download_speed(self):
-        # Use a different method to measure download speed
-        return round(requests.get('https://httpbin.org/stream-bytes/10000').elapsed.total_seconds(), 2)
-
-    def get_ping(self):
-        # Use a method to measure ping
-        return round(requests.get('https://www.google.com').elapsed.total_seconds() * 1000, 2)
-
-    def update_speed_table(self, speed, details_window, is_average=False):
-        # Update the table with the current download speed or average
-        if is_average:
-            label_text = f"Average Download Speed: {speed:.2f} Mbps"
-        else:
-            label_text = f"Current Download Speed: {speed:.2f} Mbps"
-
-        # Check if the label already exists
-        for widget in details_window.winfo_children():
-            if isinstance(widget, ttk.Label) and "Download Speed" in widget.cget("text"):
-                widget.config(text=label_text)
-                return
-        
-        ttk.Label(details_window, text=label_text).pack(pady=5)
-
-    def update_graphs(self, details_window):
-        # Clear the existing plots
-        for widget in details_window.winfo_children():
-            if isinstance(widget, tk.Canvas):
-                widget.destroy()
-
-        # Create and display new plots in the main thread
-        def plot_graphs():
-            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(8, 6))
-
-            ax1.plot(self.test_data['download_speeds'], label="Download Speed (Mbps)", color='blue')
-            ax1.set_title("Download Speed Over Time")
-            ax1.set_xlabel("Test Number")
-            ax1.set_ylabel("Speed (Mbps)")
-            ax1.legend()
-
-            ax2.plot(self.test_data['ping'], label="Ping (ms)", color='green')
-            ax2.set_title("Ping Over Time")
-            ax2.set_xlabel("Test Number")
-            ax2.set_ylabel("Ping (ms)")
-            ax2.legend()
-
-            ax3.plot(self.test_data['signal_quality'], label="Signal Quality", color='red')
-            ax3.set_title("Signal Quality Over Time")
-            ax3.set_xlabel("Test Number")
-            ax3.set_ylabel("Quality")
-            ax3.legend()
-
-            canvas = FigureCanvasTkAgg(fig, master=details_window)
-            canvas.draw()
-            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-
-        # Run plotting in the main thread
-        self.master.after(0, plot_graphs)
-
-    def update_statistics(self, details_window):
-        # Calculate statistics
-        avg_download_speed = sum(self.test_data['download_speeds']) / len(self.test_data['download_speeds']) if self.test_data['download_speeds'] else 0
-        avg_ping = sum(self.test_data['ping']) / len(self.test_data['ping']) if self.test_data['ping'] else 0
-        max_download_speed = max(self.test_data['download_speeds'], default=0)
-        min_download_speed = min(self.test_data['download_speeds'], default=0)
-        max_ping = max(self.test_data['ping'], default=0)
-        min_ping = min(self.test_data['ping'], default=0)
-
-        # Clear previous statistics
-        for widget in details_window.winfo_children():
-            if isinstance(widget, ttk.Label) and "Statistics" in widget.cget("text"):
-                widget.destroy()
-
-        # Create a frame for statistics
-        stats_frame = ttk.Frame(details_window)
-        stats_frame.pack(pady=10, fill=tk.X)
-
-        # Add labels for statistics
-        ttk.Label(stats_frame, text=f"Average Download Speed: {avg_download_speed:.2f} Mbps").pack()
-        ttk.Label(stats_frame, text=f"Average Ping: {avg_ping:.2f} ms").pack()
-        ttk.Label(stats_frame, text=f"Max Download Speed: {max_download_speed:.2f} Mbps").pack()
-        ttk.Label(stats_frame, text=f"Min Download Speed: {min_download_speed:.2f} Mbps").pack()
-        ttk.Label(stats_frame, text=f"Max Ping: {max_ping:.2f} ms").pack()
-        ttk.Label(stats_frame, text=f"Min Ping: {min_ping:.2f} ms").pack()
 
     def lock_to_tower(self):
         if self.selected_tower and self.connection_established:
@@ -355,7 +252,86 @@ class LTEAnalyzerApp:
             command = f"/interface lte set lte1 band={band} earfcn={earfcn} cell-lock=on"
             stdin, stdout, stderr = self.ssh_client.exec_command(command)
             output = stdout.read().decode()
-            print(f"Locking command output: {output}")
+            tk.messagebox.showinfo("Lock Status", f"Lock command output: {output}")
+
+    def run_speed_test(self, details_window):
+        details_window.title("Speed Test")
+
+        # Initialize the test data
+        self.test_data = {
+            'download_speeds': [],
+            'upload_speeds': [],
+            'ping': []
+        }
+
+        # Start the speed test in a separate thread
+        threading.Thread(target=self.perform_speed_test, args=(details_window,)).start()
+
+    def perform_speed_test(self, details_window):
+        duration = 60  # Duration of speed test in seconds
+        start_time = time.time()
+
+        # Use a Tkinter-compatible plotting function
+        def plot_data():
+            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8))
+            ax1.set_title('Download Speed Over Time')
+            ax2.set_title('Upload Speed Over Time')
+            ax3.set_title('Ping Over Time')
+
+            canvas = FigureCanvasTkAgg(fig, master=details_window)
+            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+            download_speeds = []
+            upload_speeds = []
+            ping_times = []
+            times = []
+
+            while time.time() - start_time < duration:
+                elapsed_time = time.time() - start_time
+                times.append(elapsed_time)
+
+                # Real speed test data
+                st = speedtest.Speedtest()
+                st.get_best_server()
+
+                download_speed = st.download() / 1_000_000  # Convert from bits/s to Mbps
+                upload_speed = st.upload() / 1_000_000  # Convert from bits/s to Mbps
+                ping_time = st.results.ping
+
+                self.test_data['download_speeds'].append(download_speed)
+                self.test_data['upload_speeds'].append(upload_speed)
+                self.test_data['ping'].append(ping_time)
+
+                download_speeds.append(download_speed)
+                upload_speeds.append(upload_speed)
+                ping_times.append(ping_time)
+
+                # Update plots
+                ax1.clear()
+                ax2.clear()
+                ax3.clear()
+                ax1.plot(times, download_speeds, label='Download Speed (Mbps)')
+                ax2.plot(times, upload_speeds, label='Upload Speed (Mbps)')
+                ax3.plot(times, ping_times, label='Ping (ms)')
+                ax1.set_title('Download Speed Over Time')
+                ax2.set_title('Upload Speed Over Time')
+                ax3.set_title('Ping Over Time')
+                ax1.set_xlabel('Time (s)')
+                ax1.set_ylabel('Download Speed (Mbps)')
+                ax2.set_xlabel('Time (s)')
+                ax2.set_ylabel('Upload Speed (Mbps)')
+                ax3.set_xlabel('Time (s)')
+                ax3.set_ylabel('Ping (ms)')
+                ax1.legend()
+                ax2.legend()
+                ax3.legend()
+
+                canvas.draw()
+                details_window.update_idletasks()
+                time.sleep(1)
+
+        # Plot data in the main thread
+        self.master.after(0, plot_data)
 
 if __name__ == "__main__":
     root = tk.Tk()
