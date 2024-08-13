@@ -91,7 +91,7 @@ class LTEAnalyzerApp:
 
     def open_github_link(self):
         import webbrowser
-        webbrowser.open("https://github.com/ashanet")
+        webbrowser.open("https://github.com/ashanet/MikroTik-LTE-Analyzer")
 
     def connect_to_router(self):
         if not self.connection_established:
