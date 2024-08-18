@@ -1,0 +1,6 @@
+paramiko
+matplotlib
+numpy
+pexpect
+speedtest
+speedtest-cli
